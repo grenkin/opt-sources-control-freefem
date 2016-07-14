@@ -1,0 +1,342 @@
+// ИСХОДНЫЕ ДАННЫЕ
+real ll = 10;
+real a = 0.92;
+real alpha = 10.0/3;
+real kappaa = 0.01;
+real b = 18.7;
+real beta = 1.5;
+real emiss = 0.7;
+real gamma = emiss / (2 * (2 - emiss));
+real thetab = 0.5;
+
+real thetad = 0.7;
+real mu = 0.01;
+real u1 = 0;
+real u2 = 1;
+
+real lambda0 = 5;
+int m0 = 3;
+
+//ПАРАМЕТРЫ СЕТКИ
+int meshsize = 100; //число подотрезков в сетке
+
+//ПАРАМЕТРЫ ИТЕРАЦИЙ
+int numiter = 50; //число итераций метода Ньютона
+int numsteps = 50;
+
+//сетка для управления
+int xnum = 300;
+int ynum = 300;
+
+real sx1 = 0.65*ll;
+real sx2 = 0.85*ll;
+real sy1 = ll/12;
+real sy2 = 5*ll/12;
+
+real[int, int] uval(xnum+1, ynum+1), uprev(xnum+1, ynum+1);
+
+real[int] jjval(numsteps+1);
+
+
+  real hx = (sx2-sx1)/xnum;
+  real hy = (sy2-sy1)/ynum;
+
+//управление
+func real ufunc(real xx0, real yy0)
+{
+  real xx = xx0, yy = yy0;
+
+  if (!(sx1 <= xx && xx <= sx2 && sy1 <= yy && yy <= sy2))
+    return 0;
+
+  int i = floor((xx-sx1)/(sx2-sx1)*xnum);
+  if (i == xnum)
+    i = xnum-1;
+  int j = floor((yy-sy1)/(sy2-sy1)*ynum);
+  if (j == ynum)
+    j = ynum-1;
+
+  real xa = sx1 + hx*i;
+  real ya = sy1 + hy*j;
+  real xb = xa + hx;
+  real yb = ya + hy;
+
+  if (xx < xa && xx > xa - 1e-10)
+    xx = xa;
+  if (xx > xb && xx < xb + 1e-10)
+    xx = xb;
+  if (yy < ya && yy > ya - 1e-10)
+    yy = ya;
+  if (yy > yb && yy < yb + 1e-10)
+    yy = yb;
+
+
+  if (!(xa <= xx && xx <= xb && ya <= yy && yy <= yb)) {
+    cout.precision(10);
+    cout << xa << "  " << ya << "\n";
+    cout << xx << "  " << yy << "\n";
+    cout << xb << "  " << yb << "\n";
+  }
+  assert(xa <= xx && xx <= xb && ya <= yy && yy <= yb);
+
+  //билинейная интерполяция
+  return uval(i, j) * (xb - xx) * (yb - yy) / (hx * hy) +
+    uval(i+1, j) * (xx - xa) * (yb - yy) / (hx * hy) +
+    uval(i, j+1) * (xb - xx) * (yy - ya) / (hx * hy) +
+    uval(i+1, j+1) * (xx - xa) * (yy - ya) / (hx * hy);
+}
+
+func u = ufunc(x, y);
+
+
+func real chifunc(real xx, real yy)
+ // chi = 0 в области источника S
+{
+  if (sx1 <= xx && xx <= sx2 && sy1 <= yy && yy <= sy2)
+    return 0;
+  else
+    return 1;
+}
+
+func chi = chifunc(x, y);
+
+
+
+for (int i = 0; i <= xnum; ++i) {
+  for (int j = 0; j <= ynum; ++j)
+    uval(i, j) = 0;
+}
+
+
+// k = step
+// uval = u^k, uprev = u^{k-1}
+// jj = J(u^k), jjprev = J(u^{k-1})
+
+
+mesh Th = square(meshsize, meshsize, [ll*x,ll*y]);
+//plot(Th);
+
+macro Grad(w) [dx(w),dy(w)] //
+fespace Vh(Th, P1);
+Vh phi, theta, theta0, v, w, p1, p2;
+
+real lambda = lambda0;
+
+ofstream flog("output_log.txt");
+flog.precision(10);
+
+ofstream flambda("output_lambda.txt");
+flambda.precision(10);
+
+ofstream fjj("output_jj.txt");
+fjj.precision(10);
+
+
+int costfuncdecr = 0;
+real jj, jjprev;
+
+
+for (int step = 0; step < numsteps; step++) {
+
+  //! uval = u^k, uprev = u^{k-1}
+  //! jj = J(u^{k-1})
+
+  //Применяем метод Ньютона
+  theta0 = thetab;
+  for (int i = 1; i <= numiter; i++) {
+
+    solve CalcSol([phi, theta], [v, w]) =
+      int2d(Th)(alpha*Grad(phi)'*Grad(v))
+      + int2d(Th)(kappaa*phi*v)
+      - int2d(Th)(4*kappaa*theta0^3*theta*v)
+      + int2d(Th)(3*kappaa*theta0^4*v)
+      + int1d(Th)(gamma*phi*v)
+      - int1d(Th)(gamma*thetab^4*v)
+      //...
+      + int2d(Th)(a*Grad(theta)'*Grad(w))
+      - int2d(Th)(b*kappaa*phi*w)
+      + int2d(Th)(4*b*kappaa*theta0^3*theta*w)
+      - int2d(Th)(3*b*kappaa*theta0^4*w)
+      - int2d(Th)(u*w)
+      + int1d(Th)(beta*theta*w)
+      - int1d(Th)(beta*thetab*w);
+
+      Vh tmp = theta - theta0;
+      if (tmp[].max - tmp[].min < 1e-7)
+        break;
+
+    theta0 = theta;
+  }
+
+
+  jjprev = jj;
+
+  //! jjprev = J(u^{k-1})
+
+  real reg = 0.0;
+  for (int i = 0; i <= xnum; ++i) {
+    real term = 0.0;
+    for (int j = 0; j <= ynum; ++j) {
+      real s = uval(i, j)^2;
+      if (j == 0 || j == ynum)
+        s /= 2;
+      term += s * hy;      
+    }
+    if (i == 0 || i == xnum)
+      term /= 2;
+    reg += term * hx;
+  }
+  reg = reg * mu / 2;
+  
+
+
+int Nint = 700;
+real hint = 1.0*ll/Nint;
+
+  jj = 0.0;
+  for (int i = 0; i <= Nint; ++i) {
+    real term = 0.0;
+    for (int j = 0; j <= Nint; ++j) {
+      real xa = i*hint;
+      real ya = j*hint;
+
+      real s;      
+      if (sx1 <= xa && xa <= sx2 && sy1 <= ya && ya <= sy2)
+        s = 0;
+      else  
+        s = (theta(xa, ya) - thetad)^2;
+
+      if (j == 0 || j == Nint)
+        s /= 2;
+      term += s * hint;
+    }
+    if (i == 0 || i == Nint)
+      term /= 2;
+    jj += term * hint;
+  }
+  jj /= 2;
+
+  jj += reg;
+  
+  jjval[step] = jj;
+
+  //! jjprev = J(u^{k-1}), jj = J(u^k)
+  //! uval = u^k, uprev = u^{k-1}
+
+
+  fjj << step << "   " << jj << "      " << reg << "\n";
+
+
+  cout << "J = " << jj << "\n\n";
+  flog << "J = " << jj << "\n";
+  cout << "reg = " << reg << "\n\n";
+  flog << "reg = " << reg << "\n";
+
+
+  if (step >= 1 && jj >= jjprev) {
+    // если функционал увеличился
+
+    uval = uprev;
+    jj = jjprev; //!!!
+
+    lambda /= 2;
+    // p1, p2 берём с предыдущей итерации (не пересчитываем)
+    costfuncdecr = 0;
+  }
+  else {
+    if (step >= 1)
+      costfuncdecr++;
+    
+    solve CalcAdj([p1, p2], [v, w]) =
+      int2d(Th)(a*Grad(p1)'*Grad(v))
+      + int2d(Th)(4*kappaa*theta^3*b*p1*v)
+      - int2d(Th)(4*kappaa*theta^3*p2*v)
+      + int1d(Th)(beta*p1*v)
+      + int2d(Th)(chi*(theta - thetad)*v)
+      //...
+      + int2d(Th)(alpha*Grad(p2)'*Grad(w))
+      + int2d(Th)(kappaa*p2*w)
+      - int2d(Th)(kappaa*b*p1*w)
+      + int1d(Th)(gamma*p2*w);
+
+    if (costfuncdecr == m0) {
+      lambda *= 2;
+      costfuncdecr = 0;
+    }
+
+  }
+
+
+  //! uval = u^k (возможно, обновлённое), uprev = u^{k-1}
+
+  //обновляем управление
+
+  uprev = uval;
+  
+  for (int i = 0; i <= xnum; ++i) {
+    for (int j = 0; j <= ynum; ++j) {
+      real xa = sx1 + hx*i;
+      real ya = sy1 + hy*j;
+      uval(i, j) = uval(i, j) - lambda * (mu * uval(i, j) - p1(xa, ya));
+      if (uval(i, j) < u1)
+        uval(i, j) = u1;
+      if (uval(i, j) > u2)
+        uval(i, j) = u2;
+    }
+  }
+  
+  //! uval = u^{k+1}, uprev = u^k
+  //! jj = J(u^k)
+
+
+  //вывести lambda_k
+
+  cout << "lambda = " << lambda << "\n\n";
+  flog << "lambda = " << lambda << "\n\n";
+  flambda << step << "   " << lambda << "\n";
+
+} // for step
+
+
+  
+
+  
+
+
+ofstream fcontrol("output_control.txt");
+fcontrol.precision(10);
+  for (int j = 0; j <= ynum; ++j) {
+    for (int i = 0; i <= xnum; ++i) {
+      fcontrol << uval(i, j) << "  ";
+    }
+    fcontrol << "\n";
+  }
+
+
+
+ofstream fout("output_state.txt");
+fout.precision(10);
+int npts = 501;
+real xi, yi;
+
+  for (int i = 1; i <= npts; i++)
+  {
+    yi = 1.0*ll*(i-1)/(npts-1);
+    for (int j = 1; j <= npts; j++) {
+      xi = 1.0*ll*(j-1)/(npts-1);
+      fout << theta(xi,yi) << "  ";
+    }
+    fout << "\n";
+  }
+
+  fout << "\n\n\n";
+
+  for (int i = 1; i <= npts; i++)
+  {
+    yi = 1.0*ll*(i-1)/(npts-1);
+    for (int j = 1; j <= npts; j++) {
+      xi = 1.0*ll*(j-1)/(npts-1);
+      fout << phi(xi,yi) << "  ";
+    }
+    fout << "\n";
+  }

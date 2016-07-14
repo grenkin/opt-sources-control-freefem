@@ -1,0 +1,360 @@
+// ИСХОДНЫЕ ДАННЫЕ
+real ll = 10;
+real a = 0.92;
+real alpha = 10.0/3;
+real kappaa = 0.01;
+real b = 18.7;
+real beta = 1.5;
+real emiss = 0.7;
+real gamma = emiss / (2 * (2 - emiss));
+real thetab = 0.5;
+
+real thetad = 0.7;
+real u1 = 0;
+real u2 = 1;
+
+//ПАРАМЕТРЫ СЕТКИ
+int meshsize = 100; //число подотрезков в сетке
+
+//ПАРАМЕТРЫ ИТЕРАЦИЙ
+int numiter = 50; //число итераций метода Ньютона
+int numsteps = 100;
+
+//сетка для управления
+int xnum = 100;
+int ynum = 150;
+
+real sx1 = 0.65*ll;
+real sx2 = 0.85*ll;
+real sy1 = ll/12;
+real sy2 = 5*ll/12;
+
+real[int, int] uval(xnum, ynum), uprev(xnum, ynum);
+real[int] p1arr(xnum*ynum);
+int[int] iarr(xnum*ynum), jarr(xnum*ynum);
+
+real[int] jjval(numsteps+1);
+
+
+  real hx = (sx2-sx1)/xnum;
+  real hy = (sy2-sy1)/ynum;
+
+//управление
+func real ufunc(real xx0, real yy0)
+{
+  real xx = xx0, yy = yy0;
+
+  if (!(sx1 <= xx && xx <= sx2 && sy1 <= yy && yy <= sy2))
+    return 0;
+
+  int i = floor((xx-sx1)/(sx2-sx1)*xnum);
+  if (i == xnum)
+    i = xnum-1;
+  int j = floor((yy-sy1)/(sy2-sy1)*ynum);
+  if (j == ynum)
+    j = ynum-1;
+
+  return uval(i, j);
+}
+
+func u = ufunc(x, y);
+
+
+func real chifunc(real xx, real yy)
+ // chi = 0 в области источника S
+{
+  if (sx1 <= xx && xx <= sx2 && sy1 <= yy && yy <= sy2)
+    return 0;
+  else
+    return 1;
+}
+
+func chi = chifunc(x, y);
+
+
+ifstream finit("u_init_guess.txt");
+
+
+for (int j = 0; j < ynum; ++j) {
+  for (int i = 0; i < xnum; ++i)
+    finit >> uval(i, j);
+}
+
+
+// k = step
+// uval = u^k, uprev = u^{k-1}
+// jj = J(u^k), jjprev = J(u^{k-1})
+
+
+mesh Th = square(meshsize, meshsize, [ll*x,ll*y]);
+//plot(Th);
+
+macro Grad(w) [dx(w),dy(w)] //
+fespace Vh(Th, P1);
+Vh phi, theta, theta0, v, w, p1, p2;
+
+
+ofstream flog("output_log.txt");
+flog.precision(10);
+
+ofstream fcrit("output_crit.txt");
+fcrit.precision(10);
+
+ofstream fjj("output_jj.txt");
+fjj.precision(10);
+
+
+real jj, jjprev;
+
+
+//int kn = xnum * ynum; // в скольких критических узлах изменить управление
+
+int kn = 1;
+
+
+theta0 = thetab; // инициализируем нач. прибл. для метода Ньютона
+// на следующих итерациях градиентного метода
+// применяется приближение с предыдущей итерации
+
+for (int step = 0; step < numsteps; step++) {
+
+  cout << "step = " << step << "\n";
+
+  //! uval = u^k, uprev = u^{k-1}
+  //! jj = J(u^{k-1})
+
+  //Применяем метод Ньютона
+  for (int i = 1; i <= numiter; i++) {
+
+    solve CalcSol([phi, theta], [v, w]) =
+      int2d(Th)(alpha*Grad(phi)'*Grad(v))
+      + int2d(Th)(kappaa*phi*v)
+      - int2d(Th)(4*kappaa*theta0^3*theta*v)
+      + int2d(Th)(3*kappaa*theta0^4*v)
+      + int1d(Th)(gamma*phi*v)
+      - int1d(Th)(gamma*thetab^4*v)
+      //...
+      + int2d(Th)(a*Grad(theta)'*Grad(w))
+      - int2d(Th)(b*kappaa*phi*w)
+      + int2d(Th)(4*b*kappaa*theta0^3*theta*w)
+      - int2d(Th)(3*b*kappaa*theta0^4*w)
+      - int2d(Th)(u*w)
+      + int1d(Th)(beta*theta*w)
+      - int1d(Th)(beta*thetab*w);
+
+      Vh tmp = theta - theta0;
+      if (tmp[].max - tmp[].min < 1e-7)
+        break;
+
+    theta0 = theta;
+  }
+
+
+  jjprev = jj;
+
+  //! jjprev = J(u^{k-1})
+
+// вычисляем значение функционала
+
+int Nint = 700;
+real hint = 1.0*ll/Nint;
+
+  jj = 0.0;
+  for (int i = 0; i <= Nint; ++i) {
+    real term = 0.0;
+    for (int j = 0; j <= Nint; ++j) {
+      real xa = i*hint;
+      real ya = j*hint;
+
+      real s;      
+      if (sx1 <= xa && xa <= sx2 && sy1 <= ya && ya <= sy2)
+        s = 0;
+      else  
+        s = (theta(xa, ya) - thetad)^2;
+
+      if (j == 0 || j == Nint)
+        s /= 2;
+      term += s * hint;
+    }
+    if (i == 0 || i == Nint)
+      term /= 2;
+    jj += term * hint;
+  }
+  jj /= 2;
+
+  
+  jjval[step] = jj;
+
+  //! jjprev = J(u^{k-1}), jj = J(u^k)
+  //! uval = u^k, uprev = u^{k-1}
+
+
+  fjj << step << "   " << jj << "\n";
+
+
+  cout << "J = " << jj << "\n\n";
+  flog << "J = " << jj << "\n";
+
+  if (step >= 1 && jj >= jjprev && kn > 1) {
+    // если функционал увеличился
+
+    uval = uprev;
+    jj = jjprev; //!!!
+
+    kn /= 2;
+    // p1, p2 берём с предыдущей итерации (не пересчитываем)
+  }
+  else {
+    
+    solve CalcAdj([p1, p2], [v, w]) =
+      int2d(Th)(a*Grad(p1)'*Grad(v))
+      + int2d(Th)(4*kappaa*theta^3*b*p1*v)
+      - int2d(Th)(4*kappaa*theta^3*p2*v)
+      + int1d(Th)(beta*p1*v)
+      + int2d(Th)(chi*(theta - thetad)*v)
+      //...
+      + int2d(Th)(alpha*Grad(p2)'*Grad(w))
+      + int2d(Th)(kappaa*p2*w)
+      - int2d(Th)(kappaa*b*p1*w)
+      + int1d(Th)(gamma*p2*w);
+
+  }
+
+
+  //! uval = u^k (возможно, обновлённое), uprev = u^{k-1}
+
+
+  // вычисляем количество критических узлов
+
+  int crit = 0;
+  for (int i = 0; i < xnum; ++i) {
+    for (int j = 0; j < ynum; ++j) {
+      real xa = sx1 + hx*(i + 0.5);
+      real ya = sy1 + hy*(j + 0.5);
+      real p1val = p1(xa, ya);
+      if (p1val < 0 && uval(i, j) == u2 || p1val > 0 && uval(i, j) == u1)
+        ++crit;
+    }
+  }
+
+
+
+  //обновляем управление
+
+  uprev = uval;
+
+  int cnt = 0;
+
+    // заполняем массив критических узлов
+
+    for (int i = 0; i < xnum; ++i) {
+      for (int j = 0; j < ynum; ++j) {
+        real xa = sx1 + hx*(i + 0.5);
+        real ya = sy1 + hy*(j + 0.5);
+        real p1val = p1(xa, ya);
+        if (p1val < 0 && uval(i, j) == u2 || p1val > 0 && uval(i, j) == u1) {
+          // если узел критический 
+         
+          p1arr[cnt] = p1val;
+          iarr[cnt] = i;
+          jarr[cnt] = j;
+          ++cnt;
+        }
+
+      }
+    }
+
+    // сортируем критические узлы по убыванию модуля градиента
+
+    // возможна небольшая оптимизация - выбирать только kn узлов
+    // с наибольшим модулем градиента (без сортировки)
+
+    cout << "sort...  (cnt = " << cnt << ")";
+
+    for (int i1 = 0; i1 < cnt; ++i1) {
+      for (int j1 = i1 + 1; j1 < cnt; ++j1) {
+        if (abs(p1arr[i1]) < abs(p1arr[j1])) {
+          real tmpreal = p1arr[i1];
+          p1arr[i1] = p1arr[j1];
+          p1arr[j1] = tmpreal;
+          int tmpint = iarr[i1];
+          iarr[i1] = iarr[j1];
+          iarr[j1] = tmpint;
+          tmpint = jarr[i1];
+          jarr[i1] = jarr[j1];
+          jarr[j1] = tmpint;
+        }
+      }
+    }
+
+    cout << "  sort finished\n";
+
+    for (int k = 0; k < cnt; ++k) {
+      if (k >= kn)
+        break;
+      int i1 = iarr[k], j1 = jarr[k];
+      if (uval(i1, j1) == u1)
+        uval(i1, j1) = u2;
+      else if (uval(i1, j1) == u2)
+        uval(i1, j1) = u1;
+      else
+        assert(0);
+    }
+
+      
+  
+  //! uval = u^{k+1}, uprev = u^k
+  //! jj = J(u^k)
+
+
+  cout << "crit = " << crit << "\n\n";
+  cout << "kn = " << kn << "\n\n";
+  flog << "crit = " << crit << "\n";
+  flog << "kn = " << kn << "\n\n";
+  fcrit << step << "    " << crit << "     " << kn << "\n";
+
+} // for step
+
+
+  
+
+  
+
+
+ofstream fcontrol("output_control.txt");
+fcontrol.precision(10);
+  for (int j = 0; j < ynum; ++j) {
+    for (int i = 0; i < xnum; ++i) {
+      fcontrol << uval(i, j) << "  ";
+    }
+    fcontrol << "\n";
+  }
+
+
+
+ofstream fout("output_state.txt");
+fout.precision(10);
+int npts = 501;
+real xi, yi;
+
+  for (int i = 1; i <= npts; i++)
+  {
+    yi = 1.0*ll*(i-1)/(npts-1);
+    for (int j = 1; j <= npts; j++) {
+      xi = 1.0*ll*(j-1)/(npts-1);
+      fout << theta(xi,yi) << "  ";
+    }
+    fout << "\n";
+  }
+
+  fout << "\n\n\n";
+
+  for (int i = 1; i <= npts; i++)
+  {
+    yi = 1.0*ll*(i-1)/(npts-1);
+    for (int j = 1; j <= npts; j++) {
+      xi = 1.0*ll*(j-1)/(npts-1);
+      fout << phi(xi,yi) << "  ";
+    }
+    fout << "\n";
+  }
